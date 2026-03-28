@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Bone Animated Mesh — WebRender</title>
+  <title>BoneAnimatedMesh-WebRender</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -401,9 +401,12 @@ function buildSkinnedMesh(skeletonBones) {
     }));
     dists.sort((a, b) => a.d - b.d);
 
-    // Use 2 nearest bones with inverse-distance weighting
+    // Use 2 nearest bones with inverse-distance weighting.
+    // w0 gets more weight as b0 gets closer (w0 = b1.d / total).
+    // Guard against the degenerate case where both distances are zero.
     const b0 = dists[0], b1 = dists[1];
-    const w0 = b1.d === 0 ? 1 : b1.d / (b0.d + b1.d);
+    const totalDist = b0.d + b1.d;
+    const w0 = totalDist === 0 ? 1 : b1.d / totalDist;
     const w1 = 1 - w0;
 
     skinIndexArr[i * 4 + 0] = b0.idx;
@@ -538,7 +541,7 @@ let mixer     = null;   // used when a glTF is loaded
   • Shoulder / forearm bones swing to simulate arm movement
 */
 function animateProceduralSkeleton(t) {
-  const { spine0, spine1, spine2, neck, shoulderL, forearmL, shoulderR, forearmR } = skeletonData;
+  const { spine0, spine1, spine2, neck, shoulderL, forearmL, handL, shoulderR, forearmR, handR } = skeletonData;
   const A = animAmp;
   const s = animSpeed;
 
@@ -557,6 +560,10 @@ function animateProceduralSkeleton(t) {
   shoulderR.rotation.x = -A * 0.6 * Math.sin(t * s * 1.2);
   forearmL.rotation.x  =  A * 0.4 * Math.sin(t * s * 1.2 + 0.3);
   forearmR.rotation.x  = -A * 0.4 * Math.sin(t * s * 1.2 + 0.3);
+
+  // Subtle wrist curl on hands
+  handL.rotation.x =  A * 0.2 * Math.sin(t * s * 1.2 + 0.6);
+  handR.rotation.x = -A * 0.2 * Math.sin(t * s * 1.2 + 0.6);
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -670,7 +677,7 @@ function replaceWithGLTF(gltf) {
   }
 
   // Update stats
-  let boneCount  = skinnedMesh ? skinnedMesh.skeleton.bones.length : 0;
+  let boneCount  = (skinnedMesh && skinnedMesh.skeleton) ? skinnedMesh.skeleton.bones.length : 0;
   let vertCount  = 0;
   model.traverse(obj => {
     if (obj.isMesh) {
