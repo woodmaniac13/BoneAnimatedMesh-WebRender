@@ -1,0 +1,724 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Bone Animated Mesh — WebRender</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #111;
+      color: #eee;
+      font-family: system-ui, sans-serif;
+      overflow: hidden;
+      height: 100dvh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    #canvas-container {
+      position: relative;
+      flex: 1;
+      overflow: hidden;
+    }
+
+    canvas { display: block; width: 100% !important; height: 100% !important; }
+
+    /* ── UI panel ──────────────────────────────────────────────────── */
+    #panel {
+      position: absolute;
+      top: 12px;
+      left: 12px;
+      background: rgba(0,0,0,.65);
+      backdrop-filter: blur(6px);
+      border: 1px solid rgba(255,255,255,.12);
+      border-radius: 10px;
+      padding: 14px 16px;
+      min-width: 200px;
+      user-select: none;
+      z-index: 10;
+    }
+
+    #panel h1 {
+      font-size: 1rem;
+      font-weight: 700;
+      margin-bottom: 12px;
+      letter-spacing: .03em;
+    }
+
+    .row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 10px;
+      cursor: pointer;
+    }
+    .row input[type=checkbox] { cursor: pointer; accent-color: #4af; width: 15px; height: 15px; }
+
+    .slider-row { margin-bottom: 10px; }
+    .slider-label {
+      display: flex;
+      justify-content: space-between;
+      font-size: .8rem;
+      margin-bottom: 3px;
+      opacity: .8;
+    }
+    input[type=range] {
+      width: 100%;
+      cursor: pointer;
+      accent-color: #4af;
+    }
+
+    .stat-row {
+      display: flex;
+      justify-content: space-between;
+      font-size: .75rem;
+      opacity: .65;
+      margin-bottom: 4px;
+    }
+
+    /* ── drop overlay ──────────────────────────────────────────────── */
+    #drop-overlay {
+      position: absolute;
+      inset: 0;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      background: rgba(0,100,200,.3);
+      border: 3px dashed #4af;
+      border-radius: 6px;
+      font-size: 1.6rem;
+      z-index: 20;
+      pointer-events: none;
+    }
+    #drop-overlay.active { display: flex; }
+
+    /* ── drop hint ─────────────────────────────────────────────────── */
+    #drop-hint {
+      position: absolute;
+      bottom: 38px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(0,0,0,.55);
+      border: 1px solid rgba(255,255,255,.15);
+      border-radius: 6px;
+      padding: 6px 14px;
+      font-size: .75rem;
+      opacity: .7;
+      white-space: nowrap;
+      z-index: 10;
+      pointer-events: none;
+    }
+
+    /* ── status bar ────────────────────────────────────────────────── */
+    #statusbar {
+      background: rgba(0,0,0,.8);
+      border-top: 1px solid rgba(255,255,255,.08);
+      padding: 4px 16px;
+      font-size: .72rem;
+      display: flex;
+      gap: 20px;
+      align-items: center;
+      flex-shrink: 0;
+      opacity: .7;
+    }
+    #statusbar strong { font-weight: 600; }
+  </style>
+</head>
+<body>
+
+<div id="canvas-container">
+  <div id="panel">
+    <h1>🦴 Bone Animated Mesh</h1>
+
+    <label class="row">
+      <input type="checkbox" id="chk-skeleton" checked />
+      Show Skeleton
+    </label>
+
+    <label class="row">
+      <input type="checkbox" id="chk-wireframe" />
+      Wireframe
+    </label>
+
+    <div class="slider-row">
+      <div class="slider-label">
+        <span>Speed</span>
+        <span id="lbl-speed">1.0×</span>
+      </div>
+      <input type="range" id="sl-speed" min="0" max="3" step="0.05" value="1" />
+    </div>
+
+    <div class="slider-row">
+      <div class="slider-label">
+        <span>Amplitude</span>
+        <span id="lbl-amp">0.30</span>
+      </div>
+      <input type="range" id="sl-amp" min="0" max="1" step="0.01" value="0.30" />
+    </div>
+
+    <div class="stat-row"><span>Bones</span><span id="stat-bones">—</span></div>
+    <div class="stat-row"><span>Vertices</span><span id="stat-verts">—</span></div>
+  </div>
+
+  <div id="drop-overlay">⬆ Drop .glb / .gltf to load</div>
+  <div id="drop-hint">Drag to orbit · Scroll to zoom · Right-drag to pan · Drop .glb to load</div>
+</div>
+
+<div id="statusbar">
+  <span><strong>BoneAnimatedMesh-WebRender</strong></span>
+  <span>Three.js · WebGL · SkinnedMesh</span>
+  <span>Weighted Vertex Skinning</span>
+  <span>Blended Bone Animation</span>
+  <span>glTF 2.0 compatible</span>
+</div>
+
+<!-- Three.js r169 from CDN (importmap approach for module scripts) -->
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFLoader }    from 'three/addons/loaders/GLTFLoader.js';
+import { SkeletonHelper } from 'three';
+
+// ─────────────────────────────────────────────────────────────────
+//  Scene bootstrap
+// ─────────────────────────────────────────────────────────────────
+const container = document.getElementById('canvas-container');
+const renderer  = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setSize(container.clientWidth, container.clientHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type    = THREE.PCFSoftShadowMap;
+container.insertBefore(renderer.domElement, container.firstChild);
+
+const scene  = new THREE.Scene();
+scene.background = new THREE.Color(0x1a1a2e);
+scene.fog        = new THREE.Fog(0x1a1a2e, 20, 60);
+
+const camera = new THREE.PerspectiveCamera(
+  45,
+  container.clientWidth / container.clientHeight,
+  0.1,
+  200
+);
+camera.position.set(0, 2.5, 6);
+
+const controls    = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 1.5, 0);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.update();
+
+// ── Lights ──────────────────────────────────────────────────────
+const ambient = new THREE.AmbientLight(0xffffff, 0.45);
+scene.add(ambient);
+
+const sun = new THREE.DirectionalLight(0xfff4e0, 1.4);
+sun.position.set(5, 10, 7);
+sun.castShadow = true;
+sun.shadow.camera.near = 0.5;
+sun.shadow.camera.far  = 50;
+sun.shadow.camera.left = sun.shadow.camera.bottom = -6;
+sun.shadow.camera.right = sun.shadow.camera.top   =  6;
+sun.shadow.mapSize.set(2048, 2048);
+scene.add(sun);
+
+const fill = new THREE.DirectionalLight(0x8090ff, 0.4);
+fill.position.set(-4, 3, -5);
+scene.add(fill);
+
+// ── Floor ───────────────────────────────────────────────────────
+const floorGeo = new THREE.PlaneGeometry(30, 30);
+const floorMat = new THREE.MeshStandardMaterial({
+  color: 0x22223a,
+  roughness: 0.9,
+  metalness: 0.05,
+});
+const floor = new THREE.Mesh(floorGeo, floorMat);
+floor.rotation.x = -Math.PI / 2;
+floor.receiveShadow = true;
+scene.add(floor);
+
+const grid = new THREE.GridHelper(30, 30, 0x444466, 0x333355);
+grid.position.y = 0.001;
+scene.add(grid);
+
+// ─────────────────────────────────────────────────────────────────
+//  Procedural SkinnedMesh character
+// ─────────────────────────────────────────────────────────────────
+
+/*
+  Bone hierarchy  (12 bones):
+    root
+    └─ spine0          (pelvis / lower back)
+       └─ spine1       (mid-back)
+          └─ spine2    (upper back / chest)
+             ├─ neck
+             │  └─ head
+             ├─ shoulderL
+             │  └─ forearmL
+             └─ shoulderR
+                └─ forearmR
+*/
+
+// Heights measured from floor
+const BONE_Y = [
+  0.00,  // root        (at floor level)
+  0.55,  // spine0
+  1.00,  // spine1
+  1.50,  // spine2  (chest)
+  1.85,  // neck
+  2.20,  // head
+];
+
+function buildSkeleton() {
+  const bones = [];
+
+  function bone(name, x, y, z) {
+    const b = new THREE.Bone();
+    b.name = name;
+    b.position.set(x, y, z);
+    bones.push(b);
+    return b;
+  }
+
+  const root    = bone('root',      0,    BONE_Y[0], 0);
+  const spine0  = bone('spine0',    0,    BONE_Y[1] - BONE_Y[0], 0);
+  const spine1  = bone('spine1',    0,    BONE_Y[2] - BONE_Y[1], 0);
+  const spine2  = bone('spine2',    0,    BONE_Y[3] - BONE_Y[2], 0);
+  const neck    = bone('neck',      0,    BONE_Y[4] - BONE_Y[3], 0);
+  const head    = bone('head',      0,    BONE_Y[5] - BONE_Y[4], 0);
+
+  // Shoulder bones branch from spine2 (chest)
+  const shoulderL = bone('shoulderL', -0.35, 0, 0);
+  const forearmL  = bone('forearmL',  -0.55, -0.25, 0);
+  const handL     = bone('handL',     -0.40,  0, 0);
+
+  const shoulderR = bone('shoulderR',  0.35, 0, 0);
+  const forearmR  = bone('forearmR',   0.55, -0.25, 0);
+  const handR     = bone('handR',      0.40,  0, 0);
+
+  // Build hierarchy
+  root.add(spine0);
+  spine0.add(spine1);
+  spine1.add(spine2);
+  spine2.add(neck);
+  neck.add(head);
+
+  spine2.add(shoulderL);
+  shoulderL.add(forearmL);
+  forearmL.add(handL);
+
+  spine2.add(shoulderR);
+  shoulderR.add(forearmR);
+  forearmR.add(handR);
+
+  return { root, bones, spine0, spine1, spine2, neck, head, shoulderL, forearmL, handL, shoulderR, forearmR, handR };
+}
+
+/*
+  Geometry: a capsule-like body made from a subdivided cylinder.
+  Each vertex gets skin weights blended from the 2 nearest bones.
+*/
+function buildSkinnedMesh(skeletonBones) {
+  const { bones } = skeletonBones;
+
+  // ── Compute world positions of each bone once ──────────────────
+  // We create a temporary skeleton to evaluate bone world positions.
+  const tempSkel = new THREE.Skeleton(bones);
+  const tempRoot = skeletonBones.root;
+  const tempObj  = new THREE.Object3D();
+  tempObj.add(tempRoot);
+  tempObj.updateMatrixWorld(true);
+  tempSkel.calculateInverses();
+
+  // World position of each bone
+  const boneWorldPos = bones.map(b => {
+    const wp = new THREE.Vector3();
+    b.getWorldPosition(wp);
+    return wp;
+  });
+
+  // ── Build body geometry ──────────────────────────────────────
+  // Torso: tall cylinder
+  const torsoGeo = new THREE.CylinderGeometry(0.28, 0.32, 1.55, 16, 14);
+  // Head: sphere
+  const headGeo  = new THREE.SphereGeometry(0.24, 16, 12);
+  // Arms (left & right): cylinders
+  const armGeoL  = new THREE.CylinderGeometry(0.07, 0.06, 0.60, 10, 6);
+  const armGeoR  = new THREE.CylinderGeometry(0.07, 0.06, 0.60, 10, 6);
+  const fgeoL    = new THREE.CylinderGeometry(0.055, 0.045, 0.55, 10, 6);
+  const fgeoR    = new THREE.CylinderGeometry(0.055, 0.045, 0.55, 10, 6);
+
+  // Position each sub-geometry in object space before merging
+  // Torso center at y=0.775 (from 0 to 1.55)
+  torsoGeo.translate(0, 0.775, 0);
+  // Head center at y=2.20
+  headGeo.translate(0, 2.20, 0);
+  // Upper-arm L: shoulder at (-0.35, 1.50, 0), elbow at (-0.90, 1.25, 0)
+  armGeoL.rotateZ( Math.PI / 4);
+  armGeoL.translate(-0.625, 1.375, 0);
+  armGeoR.rotateZ(-Math.PI / 4);
+  armGeoR.translate( 0.625, 1.375, 0);
+  // Forearm L: elbow at (-0.90, 1.25) → wrist at (-1.30, 1.00)
+  fgeoL.rotateZ( Math.PI / 5);
+  fgeoL.translate(-1.075, 1.10, 0);
+  fgeoR.rotateZ(-Math.PI / 5);
+  fgeoR.translate( 1.075, 1.10, 0);
+
+  // Merge all into one BufferGeometry using THREE.BufferGeometryUtils
+  // We'll do it manually to avoid the extra import.
+  const parts = [torsoGeo, headGeo, armGeoL, armGeoR, fgeoL, fgeoR];
+  const merged = mergeGeometries(parts);
+
+  // ── Assign skin weights ──────────────────────────────────────
+  const posAttr  = merged.attributes.position;
+  const count    = posAttr.count;
+
+  const skinIndexArr  = new Uint16Array(count * 4);
+  const skinWeightArr = new Float32Array(count * 4);
+
+  for (let i = 0; i < count; i++) {
+    const vx = posAttr.getX(i);
+    const vy = posAttr.getY(i);
+    const vz = posAttr.getZ(i);
+    const vp = new THREE.Vector3(vx, vy, vz);
+
+    // Compute distance from vertex to each bone's world position
+    const dists = boneWorldPos.map((bp, idx) => ({
+      idx,
+      d: vp.distanceTo(bp),
+    }));
+    dists.sort((a, b) => a.d - b.d);
+
+    // Use 2 nearest bones with inverse-distance weighting
+    const b0 = dists[0], b1 = dists[1];
+    const w0 = b1.d === 0 ? 1 : b1.d / (b0.d + b1.d);
+    const w1 = 1 - w0;
+
+    skinIndexArr[i * 4 + 0] = b0.idx;
+    skinIndexArr[i * 4 + 1] = b1.idx;
+    skinIndexArr[i * 4 + 2] = 0;
+    skinIndexArr[i * 4 + 3] = 0;
+
+    skinWeightArr[i * 4 + 0] = w0;
+    skinWeightArr[i * 4 + 1] = w1;
+    skinWeightArr[i * 4 + 2] = 0;
+    skinWeightArr[i * 4 + 3] = 0;
+  }
+
+  merged.setAttribute('skinIndex',  new THREE.Uint16BufferAttribute(skinIndexArr,  4));
+  merged.setAttribute('skinWeight', new THREE.Float32BufferAttribute(skinWeightArr, 4));
+
+  // ── Material & mesh ──────────────────────────────────────────
+  const mat = new THREE.MeshStandardMaterial({
+    color: 0x4488cc,
+    roughness: 0.55,
+    metalness: 0.15,
+    skinning: true,
+  });
+
+  const mesh = new THREE.SkinnedMesh(merged, mat);
+  mesh.castShadow    = true;
+  mesh.receiveShadow = false;
+  mesh.normalizeSkinWeights();
+
+  // Attach skeleton
+  const skeleton = new THREE.Skeleton(bones);
+  mesh.add(skeletonBones.root);
+  mesh.bind(skeleton);
+
+  return mesh;
+}
+
+// ── Minimal geometry merger (avoids BufferGeometryUtils import) ──
+function mergeGeometries(geos) {
+  let totalPos   = 0;
+  let totalIndex = 0;
+
+  for (const g of geos) {
+    g.computeVertexNormals();
+    totalPos   += g.attributes.position.count;
+    totalIndex += (g.index ? g.index.count : g.attributes.position.count);
+  }
+
+  const posArr = new Float32Array(totalPos * 3);
+  const norArr = new Float32Array(totalPos * 3);
+  const uvArr  = new Float32Array(totalPos * 2);
+  const idxArr = new Uint32Array(totalIndex);
+
+  let pOff = 0, iOff = 0;
+
+  for (const g of geos) {
+    const pa = g.attributes.position;
+    const na = g.attributes.normal;
+    const ua = g.attributes.uv;
+    const n  = pa.count;
+
+    for (let i = 0; i < n; i++) {
+      posArr[(pOff + i) * 3 + 0] = pa.getX(i);
+      posArr[(pOff + i) * 3 + 1] = pa.getY(i);
+      posArr[(pOff + i) * 3 + 2] = pa.getZ(i);
+      if (na) {
+        norArr[(pOff + i) * 3 + 0] = na.getX(i);
+        norArr[(pOff + i) * 3 + 1] = na.getY(i);
+        norArr[(pOff + i) * 3 + 2] = na.getZ(i);
+      }
+      if (ua) {
+        uvArr[(pOff + i) * 2 + 0] = ua.getX(i);
+        uvArr[(pOff + i) * 2 + 1] = ua.getY(i);
+      }
+    }
+
+    if (g.index) {
+      for (let i = 0; i < g.index.count; i++) {
+        idxArr[iOff + i] = g.index.getX(i) + pOff;
+      }
+      iOff += g.index.count;
+    } else {
+      for (let i = 0; i < n; i++) {
+        idxArr[iOff + i] = pOff + i;
+      }
+      iOff += n;
+    }
+
+    pOff += n;
+  }
+
+  const out = new THREE.BufferGeometry();
+  out.setAttribute('position', new THREE.Float32BufferAttribute(posArr, 3));
+  out.setAttribute('normal',   new THREE.Float32BufferAttribute(norArr, 3));
+  out.setAttribute('uv',       new THREE.Float32BufferAttribute(uvArr,  2));
+  out.setIndex(new THREE.BufferAttribute(idxArr, 1));
+  return out;
+}
+
+// ─────────────────────────────────────────────────────────────────
+//  Build the default character
+// ─────────────────────────────────────────────────────────────────
+let skeletonData = buildSkeleton();
+let mesh         = buildSkinnedMesh(skeletonData);
+scene.add(mesh);
+
+let skelHelper = new SkeletonHelper(mesh);
+scene.add(skelHelper);
+
+// Update stats
+function updateStats() {
+  document.getElementById('stat-bones').textContent =
+    mesh.skeleton ? mesh.skeleton.bones.length : '—';
+  document.getElementById('stat-verts').textContent =
+    mesh.geometry.attributes.position
+      ? mesh.geometry.attributes.position.count.toLocaleString()
+      : '—';
+}
+updateStats();
+
+// ─────────────────────────────────────────────────────────────────
+//  Animation state
+// ─────────────────────────────────────────────────────────────────
+let animSpeed = 1.0;
+let animAmp   = 0.30;
+let clock     = new THREE.Clock();
+let mixer     = null;   // used when a glTF is loaded
+
+/*
+  Procedural animation:
+  • Spine bones oscillate with sine waves (S-curve bending)
+  • Shoulder / forearm bones swing to simulate arm movement
+*/
+function animateProceduralSkeleton(t) {
+  const { spine0, spine1, spine2, neck, shoulderL, forearmL, shoulderR, forearmR } = skeletonData;
+  const A = animAmp;
+  const s = animSpeed;
+
+  // Spine S-curve (lateral sway)
+  spine0.rotation.z  =  A * 0.5  * Math.sin(t * s * 1.2);
+  spine1.rotation.z  =  A * 0.7  * Math.sin(t * s * 1.2 + 0.4);
+  spine2.rotation.z  =  A * 0.5  * Math.sin(t * s * 1.2 + 0.8);
+  neck.rotation.z    =  A * 0.2  * Math.sin(t * s * 1.2 + 1.0);
+
+  // Forward-backward rock
+  spine0.rotation.x  =  A * 0.25 * Math.sin(t * s * 0.9);
+  spine1.rotation.x  =  A * 0.30 * Math.sin(t * s * 0.9 + 0.3);
+
+  // Arms swing opposite to spine
+  shoulderL.rotation.x =  A * 0.6 * Math.sin(t * s * 1.2);
+  shoulderR.rotation.x = -A * 0.6 * Math.sin(t * s * 1.2);
+  forearmL.rotation.x  =  A * 0.4 * Math.sin(t * s * 1.2 + 0.3);
+  forearmR.rotation.x  = -A * 0.4 * Math.sin(t * s * 1.2 + 0.3);
+}
+
+// ─────────────────────────────────────────────────────────────────
+//  Render loop
+// ─────────────────────────────────────────────────────────────────
+let frameId;
+function animate() {
+  frameId = requestAnimationFrame(animate);
+  const delta = clock.getDelta();
+  const elapsed = clock.elapsedTime;
+
+  controls.update();
+
+  if (mixer) {
+    mixer.timeScale = animSpeed;
+    mixer.update(delta);
+  } else {
+    animateProceduralSkeleton(elapsed);
+  }
+
+  renderer.render(scene, camera);
+}
+animate();
+
+// ─────────────────────────────────────────────────────────────────
+//  Responsive resize
+// ─────────────────────────────────────────────────────────────────
+const resizeObserver = new ResizeObserver(() => {
+  const w = container.clientWidth;
+  const h = container.clientHeight;
+  renderer.setSize(w, h);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+});
+resizeObserver.observe(container);
+
+// ─────────────────────────────────────────────────────────────────
+//  UI controls
+// ─────────────────────────────────────────────────────────────────
+document.getElementById('chk-skeleton').addEventListener('change', e => {
+  skelHelper.visible = e.target.checked;
+});
+
+document.getElementById('chk-wireframe').addEventListener('change', e => {
+  if (Array.isArray(mesh.material)) {
+    mesh.material.forEach(m => { m.wireframe = e.target.checked; });
+  } else {
+    mesh.material.wireframe = e.target.checked;
+  }
+});
+
+document.getElementById('sl-speed').addEventListener('input', e => {
+  animSpeed = parseFloat(e.target.value);
+  document.getElementById('lbl-speed').textContent = animSpeed.toFixed(1) + '×';
+});
+
+document.getElementById('sl-amp').addEventListener('input', e => {
+  animAmp = parseFloat(e.target.value);
+  document.getElementById('lbl-amp').textContent = animAmp.toFixed(2);
+});
+
+// ─────────────────────────────────────────────────────────────────
+//  Drag-and-drop glTF / GLB loader
+// ─────────────────────────────────────────────────────────────────
+const overlay    = document.getElementById('drop-overlay');
+const gltfLoader = new GLTFLoader();
+
+function replaceWithGLTF(gltf) {
+  // Remove previous mesh + skeleton helper
+  scene.remove(mesh);
+  scene.remove(skelHelper);
+  if (mixer) { mixer.stopAllAction(); mixer = null; }
+
+  const model = gltf.scene;
+
+  // Auto-scale & center
+  const box    = new THREE.Box3().setFromObject(model);
+  const size   = new THREE.Vector3();
+  box.getSize(size);
+  const maxDim = Math.max(size.x, size.y, size.z);
+  const scale  = 3.0 / maxDim;
+  model.scale.setScalar(scale);
+
+  // Place feet on floor
+  const box2   = new THREE.Box3().setFromObject(model);
+  model.position.y -= box2.min.y;
+
+  model.traverse(obj => {
+    if (obj.isMesh) {
+      obj.castShadow    = true;
+      obj.receiveShadow = true;
+    }
+  });
+
+  scene.add(model);
+  mesh = model;
+
+  // Set up skeleton helper on first SkinnedMesh found
+  let skinnedMesh = null;
+  model.traverse(obj => { if (!skinnedMesh && obj.isSkinnedMesh) skinnedMesh = obj; });
+  if (skinnedMesh) {
+    skelHelper = new SkeletonHelper(skinnedMesh);
+    skelHelper.visible = document.getElementById('chk-skeleton').checked;
+    scene.add(skelHelper);
+  }
+
+  // Animation mixer
+  if (gltf.animations && gltf.animations.length > 0) {
+    mixer = new THREE.AnimationMixer(model);
+    gltf.animations.forEach(clip => mixer.clipAction(clip).play());
+  }
+
+  // Update stats
+  let boneCount  = skinnedMesh ? skinnedMesh.skeleton.bones.length : 0;
+  let vertCount  = 0;
+  model.traverse(obj => {
+    if (obj.isMesh) {
+      vertCount += (obj.geometry.attributes.position?.count ?? 0);
+    }
+  });
+  document.getElementById('stat-bones').textContent = boneCount || '—';
+  document.getElementById('stat-verts').textContent = vertCount ? vertCount.toLocaleString() : '—';
+
+  // Orbit around model center
+  const centre = new THREE.Vector3();
+  new THREE.Box3().setFromObject(model).getCenter(centre);
+  controls.target.copy(centre);
+  controls.update();
+}
+
+container.addEventListener('dragover', e => {
+  e.preventDefault();
+  overlay.classList.add('active');
+});
+
+container.addEventListener('dragleave', e => {
+  if (!container.contains(e.relatedTarget)) {
+    overlay.classList.remove('active');
+  }
+});
+
+container.addEventListener('drop', e => {
+  e.preventDefault();
+  overlay.classList.remove('active');
+
+  const file = e.dataTransfer.files[0];
+  if (!file) return;
+  const ext = file.name.split('.').pop().toLowerCase();
+  if (ext !== 'gltf' && ext !== 'glb') {
+    alert('Please drop a .gltf or .glb file.');
+    return;
+  }
+
+  const url = URL.createObjectURL(file);
+  gltfLoader.load(
+    url,
+    gltf => { URL.revokeObjectURL(url); replaceWithGLTF(gltf); },
+    undefined,
+    err  => { URL.revokeObjectURL(url); console.error('glTF load error:', err); }
+  );
+});
+</script>
+
+</body>
+</html>
